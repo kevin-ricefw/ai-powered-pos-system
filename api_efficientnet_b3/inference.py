@@ -1,17 +1,12 @@
 """ONNX EfficientNet-B3 inference (no Flask/camera deps — Cloud Run safe)."""
 
 import csv
-import os
 
 import cv2
 import numpy as np
 import onnxruntime as ort
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-ONNX_PATH = os.environ.get("ONNX_PATH", os.path.join(BASE, "efficientnet_b3.onnx"))
-THRESHOLD_PATH = os.environ.get(
-    "THRESHOLD_PATH", os.path.join(BASE, "class_thresholds.csv")
-)
+from config import ONNX_PATH, THRESHOLD_PATH
 
 classes: list[str] = []
 thresholds: dict[str, float] = {}
@@ -47,34 +42,34 @@ def softmax(x: np.ndarray) -> np.ndarray:
     return e / e.sum()
 
 
-def _top3_from_probs(probs: np.ndarray) -> list[dict]:
-    top3_idx = probs.argsort()[::-1][:3]
+def _topk_from_probs(probs: np.ndarray, k: int = 3) -> list[dict]:
+    top_idx = probs.argsort()[::-1][:k]
     return [
         {
             "label": classes[i],
             "prob": float(probs[i]),
             "threshold": thresholds[classes[i]],
         }
-        for i in top3_idx
+        for i in top_idx
     ]
 
 
-def classify(frame_bgr: np.ndarray) -> list[dict]:
+def classify(frame_bgr: np.ndarray, k: int = 3) -> list[dict]:
     inp = preprocess(frame_bgr)
     logits = session.run(None, {input_name: inp})[0][0]
-    return _top3_from_probs(softmax(logits))
+    return _topk_from_probs(softmax(logits), k)
 
 
-def classify_many(frames_bgr: list[np.ndarray]) -> list[dict]:
+def classify_many(frames_bgr: list[np.ndarray], k: int = 3) -> list[dict]:
     """Run inference on one or more images; average logits when multiple are sent."""
     if not frames_bgr:
         raise ValueError("At least one image is required")
     if len(frames_bgr) == 1:
-        return classify(frames_bgr[0])
+        return classify(frames_bgr[0], k)
 
     logits_list = []
     for frame_bgr in frames_bgr:
         inp = preprocess(frame_bgr)
         logits_list.append(session.run(None, {input_name: inp})[0][0])
     avg_logits = np.mean(logits_list, axis=0)
-    return _top3_from_probs(softmax(avg_logits))
+    return _topk_from_probs(softmax(avg_logits), k)

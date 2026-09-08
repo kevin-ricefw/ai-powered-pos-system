@@ -1,11 +1,11 @@
 """GCS image-only feedback storage (no metadata files)."""
 
-import os
 import re
 import uuid
 from typing import Optional
 
-FEEDBACK_BUCKET = os.environ.get("FEEDBACK_BUCKET", "vegdetect-pos-models")
+from config import FEEDBACK_BUCKET
+
 PREFIX_CONFIRM = "confirmations"
 PREFIX_CORRECT = "corrections"
 PREFIX_NEW = "new"

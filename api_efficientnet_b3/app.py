@@ -5,19 +5,23 @@ Local:  python app.py  -> http://localhost:8080
 """
 
 import base64
-import os
 import time
+import uuid
 from pathlib import Path
 from typing import List, Optional, Union
 
 import cv2
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
+from azure_blob import upload_pending_image
+from config import PORT
+from db import fetch_top_products
 from gcs_feedback import (
     FEEDBACK_BUCKET,
     PREFIX_CONFIRM,
@@ -93,6 +97,11 @@ class ProduceListResponse(BaseModel):
 class FeedbackSaveResponse(BaseModel):
     status: str = "saved"
     path: str
+
+
+class DetectProductResponse(BaseModel):
+    request_id: str
+    product_ids: List[str]
 
 
 if STATIC_DIR.is_dir():
@@ -224,6 +233,35 @@ async def infer(request: Request):
     )
 
 
+@app.post(
+    "/api/detect-product",
+    tags=["Inference"],
+    summary="Classify image and match against a tenant's products",
+    response_model=DetectProductResponse,
+)
+async def detect_product(
+    background_tasks: BackgroundTasks,
+    image: UploadFile = File(...),
+    tenant_id: str = Form(...),
+):
+    contents, content_type, _ = await _read_image(image)
+    frame = cv2.imdecode(np.frombuffer(contents, np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        raise HTTPException(status_code=400, detail="Invalid image")
+
+    request_id = str(uuid.uuid4())
+    predictions = classify_many([frame], k=5)
+    labels = [p["label"] for p in predictions]
+    print(f"[detect-product] request_id={request_id} tenant_id={tenant_id} predicted_labels={labels}")
+    matches = await run_in_threadpool(fetch_top_products, tenant_id, labels)
+    product_ids = [m["product_id"] for m in matches]
+    top_name = matches[0]["name"] if matches else None
+
+    background_tasks.add_task(upload_pending_image, request_id, contents, content_type, top_name)
+
+    return DetectProductResponse(request_id=request_id, product_ids=product_ids)
+
+
 async def _read_image(image: UploadFile) -> tuple[bytes, Optional[str], Optional[str]]:
     if not image.content_type or not image.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image")
@@ -303,5 +341,4 @@ async def new_produce_feedback(
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=False)

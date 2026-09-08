@@ -10,12 +10,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Model downloaded from GCS during Cloud Build (see cloudbuild.yaml).
-COPY app.py inference.py gcs_feedback.py class_thresholds.csv ./
-COPY efficientnet_b3.onnx ./
+COPY app.py inference.py gcs_feedback.py config.py db.py azure_blob.py class_thresholds.csv ./
+COPY models/models_efficientnet_b3.onnx ./
 COPY static/ ./static/
 COPY VeggieLens_API.postman_collection.json ./
 
-ENV ONNX_PATH=/app/efficientnet_b3.onnx
+ENV ONNX_PATH=/app/models_efficientnet_b3.onnx
 ENV THRESHOLD_PATH=/app/class_thresholds.csv
 
 EXPOSE 8080

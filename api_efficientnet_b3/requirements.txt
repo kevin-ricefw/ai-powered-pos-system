@@ -6,3 +6,8 @@ onnxruntime
 numpy
 Pillow
 google-cloud-storage
+psycopg2-binary
+sshtunnel
+paramiko<3.3  # sshtunnel references paramiko.DSSKey, removed in paramiko>=3.3
+azure-storage-blob
+python-dotenv

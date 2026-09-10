@@ -13,7 +13,18 @@ from typing import List, Optional, Union
 import cv2
 import numpy as np
 import uvicorn
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -99,9 +110,14 @@ class FeedbackSaveResponse(BaseModel):
     path: str
 
 
+class ProductMatch(BaseModel):
+    product_id: str
+    name: str
+
+
 class DetectProductResponse(BaseModel):
     request_id: str
-    product_ids: List[str]
+    products: List[ProductMatch]
 
 
 if STATIC_DIR.is_dir():
@@ -233,6 +249,53 @@ async def infer(request: Request):
     )
 
 
+
+# ponytail: single-process in-memory cache of the latest frame per live
+# WebSocket session, so /api/collect-training-image can grab "whatever the
+# camera is currently seeing" without the frontend re-uploading the image.
+# Lost on restart, not shared across workers — fine for a single-container
+# POC; move to Redis/shared storage if this ever runs multi-worker.
+_latest_frames: dict[str, bytes] = {}
+
+
+@app.websocket("/ws/infer")
+async def ws_infer(websocket: WebSocket, tenant_id: Optional[str] = None):
+    """Continuous classification: client sends one raw image (bytes) per frame,
+    server pushes back predictions immediately, on the same open connection.
+
+    Pass ?tenant_id=<uuid> on the connection URL to also get matched products
+    (same lookup as /api/detect-product) alongside each frame's predictions.
+
+    The first message sent back is {"session_id": "..."} — pass that session_id
+    to /api/collect-training-image to save whatever frame was most recently
+    received on this connection.
+    """
+    session_id = str(uuid.uuid4())
+    await websocket.accept()
+    await websocket.send_json({"session_id": session_id})
+    try:
+        while True:
+            data = await websocket.receive_bytes()
+            _latest_frames[session_id] = data
+            frame = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+            if frame is None:
+                await websocket.send_json({"error": "Invalid image bytes"})
+                continue
+            predictions = await run_in_threadpool(classify_many, [frame])
+            message = {"predictions": predictions}
+            if tenant_id:
+                labels = [p["label"] for p in predictions]
+                try:
+                    message["products"] = await run_in_threadpool(fetch_top_products, tenant_id, labels)
+                except Exception as exc:
+                    message["products_error"] = str(exc)
+            await websocket.send_json(message)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        _latest_frames.pop(session_id, None)
+
+
 @app.post(
     "/api/detect-product",
     tags=["Inference"],
@@ -253,13 +316,17 @@ async def detect_product(
     predictions = classify_many([frame], k=5)
     labels = [p["label"] for p in predictions]
     print(f"[detect-product] request_id={request_id} tenant_id={tenant_id} predicted_labels={labels}")
-    matches = await run_in_threadpool(fetch_top_products, tenant_id, labels)
-    product_ids = [m["product_id"] for m in matches]
+    try:
+        matches = await run_in_threadpool(fetch_top_products, tenant_id, labels)
+    except Exception as exc:
+        print(f"[detect-product] request_id={request_id} product lookup failed: {exc!r}")
+        raise HTTPException(status_code=503, detail="Product lookup temporarily unavailable, please try again")
+    products = [ProductMatch(product_id=m["product_id"], name=m["name"]) for m in matches]
     top_name = matches[0]["name"] if matches else None
 
     background_tasks.add_task(upload_pending_image, request_id, contents, content_type, top_name)
 
-    return DetectProductResponse(request_id=request_id, product_ids=product_ids)
+    return DetectProductResponse(request_id=request_id, products=products)
 
 
 async def _read_image(image: UploadFile) -> tuple[bytes, Optional[str], Optional[str]]:
@@ -338,6 +405,26 @@ async def new_produce_feedback(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+
+
+@app.post(
+    "/api/collect-training-image",
+    tags=["Feedback"],
+    summary="Save the live /ws/infer camera's current frame to Blob Storage, labeled",
+    response_model=FeedbackSaveResponse,
+)
+async def collect_training_image(
+    session_id: str = Form(..., description="session_id received from /ws/infer on connect"),
+    label: str = Form(...),
+):
+    contents = _latest_frames.get(session_id)
+    if contents is None:
+        raise HTTPException(status_code=404, detail="No live frame for this session_id (socket closed or no frame received yet)")
+    request_id = str(uuid.uuid4())
+    path = await run_in_threadpool(upload_pending_image, request_id, contents, "image/jpeg", label)
+    if not path:
+        raise HTTPException(status_code=503, detail="Blob storage not configured")
+    return FeedbackSaveResponse(path=path)
 
 
 if __name__ == "__main__":

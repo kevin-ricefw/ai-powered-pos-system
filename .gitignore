@@ -20,3 +20,4 @@ weak_classes/
 *.png
 *.webp
 .git/
+*.tar

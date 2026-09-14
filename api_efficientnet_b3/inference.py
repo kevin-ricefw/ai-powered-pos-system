@@ -1,19 +1,34 @@
-"""ONNX EfficientNet-B3 inference (no Flask/camera deps — Cloud Run safe)."""
+"""ONNX EfficientNet-B7 inference (no Flask/camera deps — Cloud Run safe)."""
 
-import csv
+import json
 
 import cv2
 import numpy as np
 import onnxruntime as ort
 
-from config import ONNX_PATH, THRESHOLD_PATH
+from config import CLASS_ALIASES_PATH, CLASS_MAP_PATH, DEFAULT_THRESHOLD, IMG_SIZE, ONNX_PATH
 
-classes: list[str] = []
-thresholds: dict[str, float] = {}
-with open(THRESHOLD_PATH) as f:
-    for row in csv.DictReader(f):
-        classes.append(row["class"])
-        thresholds[row["class"]] = float(row["threshold"])
+with open(CLASS_MAP_PATH) as f:
+    class_to_idx: dict[str, int] = json.load(f)
+
+with open(CLASS_ALIASES_PATH) as f:
+    class_aliases: dict[str, list[str]] = json.load(f)
+
+classes: list[str] = [name for name, _ in sorted(class_to_idx.items(), key=lambda kv: kv[1])]
+thresholds: dict[str, float] = {name: DEFAULT_THRESHOLD for name in classes}
+
+
+def expand_label_aliases(labels: list[str]) -> list[str]:
+    """Expand each predicted class label into its known product-name variants
+    (falling back to the label itself when a class has no aliases), for
+    fuzzy-matching against real product names in the DB."""
+    expanded: list[str] = []
+    for label in labels:
+        aliases = class_aliases.get(label) or [label]
+        for alias in aliases:
+            if alias not in expanded:
+                expanded.append(alias)
+    return expanded
 
 sess_options = ort.SessionOptions()
 sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -23,7 +38,6 @@ session = ort.InferenceSession(
     providers=["CPUExecutionProvider"],
 )
 input_name = session.get_inputs()[0].name
-IMG_SIZE = 300
 
 MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)

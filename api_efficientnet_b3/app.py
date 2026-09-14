@@ -43,15 +43,16 @@ from gcs_feedback import (
     normalize_produce_name,
     upload_feedback_image,
 )
-from inference import classify_many, classes as MODEL_CLASSES
+from config import ONNX_PATH
+from inference import classify_many, classes as MODEL_CLASSES, expand_label_aliases
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI(
-    title="VeggieLens EfficientNet-B3 API",
+    title="VeggieLens EfficientNet-B7 API",
     description=(
-        "32-class produce classifier with camera UI, Swagger docs, and GCS feedback "
+        f"{len(MODEL_CLASSES)}-class produce classifier with camera UI, Swagger docs, and GCS feedback "
         "(confirmations / corrections / new produce)."
     ),
     version="1.3.0",
@@ -110,9 +111,47 @@ class FeedbackSaveResponse(BaseModel):
     path: str
 
 
-class ProductMatch(BaseModel):
-    product_id: str
+class ProductCategory(BaseModel):
+    id: int
     name: str
+    image_url: Optional[str] = None
+
+
+class SalesUnitOfMeasurement(BaseModel):
+    id: int
+    name: str
+    symbol: Optional[str] = None
+    type: str
+    ratio: Optional[float] = None
+    category_id: int
+
+
+class DepositProduct(BaseModel):
+    id: int
+    name: str
+    price: float
+    quantity: float
+
+
+class ProductMatch(BaseModel):
+    id: int
+    uuid: str
+    name: str
+    sku: Optional[str] = None
+    price: float
+    thumbnail: str
+    category: Optional[ProductCategory] = None
+    sales_unit_of_measurement: Optional[SalesUnitOfMeasurement] = None
+    tax_rate: Optional[float] = None
+    tax_type: str
+    discount_type: str
+    discount_value: float
+    scale: bool
+    scale_lb_factor: Optional[float] = None
+    disable_discount: bool
+    has_depositable_products: bool
+    deposit_products: List[DepositProduct] = []
+    match_score: float
 
 
 class DetectProductResponse(BaseModel):
@@ -136,7 +175,7 @@ async def camera_ui():
 async def health():
     return HealthResponse(
         status="ok",
-        model="efficientnet_b3.onnx",
+        model=Path(ONNX_PATH).name,
         feedback_bucket=FEEDBACK_BUCKET or "not configured",
     )
 
@@ -284,11 +323,12 @@ async def ws_infer(websocket: WebSocket, tenant_id: Optional[str] = None):
             predictions = await run_in_threadpool(classify_many, [frame])
             message = {"predictions": predictions}
             if tenant_id:
-                labels = [p["label"] for p in predictions]
+                labels = expand_label_aliases([p["label"] for p in predictions])
                 try:
                     message["products"] = await run_in_threadpool(fetch_top_products, tenant_id, labels)
                 except Exception as exc:
-                    message["products_error"] = str(exc)
+                    print(f"[ws/infer] session_id={session_id} tenant_id={tenant_id} product lookup failed: {exc!r}")
+                    message["products_error"] = "Product lookup temporarily unavailable, please try again"
             await websocket.send_json(message)
     except WebSocketDisconnect:
         pass
@@ -314,14 +354,14 @@ async def detect_product(
 
     request_id = str(uuid.uuid4())
     predictions = classify_many([frame], k=5)
-    labels = [p["label"] for p in predictions]
+    labels = expand_label_aliases([p["label"] for p in predictions])
     print(f"[detect-product] request_id={request_id} tenant_id={tenant_id} predicted_labels={labels}")
     try:
         matches = await run_in_threadpool(fetch_top_products, tenant_id, labels)
     except Exception as exc:
         print(f"[detect-product] request_id={request_id} product lookup failed: {exc!r}")
         raise HTTPException(status_code=503, detail="Product lookup temporarily unavailable, please try again")
-    products = [ProductMatch(product_id=m["product_id"], name=m["name"]) for m in matches]
+    products = [ProductMatch(**m) for m in matches]
     top_name = matches[0]["name"] if matches else None
 
     background_tasks.add_task(upload_pending_image, request_id, contents, content_type, top_name)
@@ -358,7 +398,8 @@ async def confirm_feedback(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+        print(f"[confirm] upload failed: {e!r}")
+        raise HTTPException(status_code=500, detail="Upload failed, please try again")
 
 
 @app.post(
@@ -381,7 +422,8 @@ async def correct_feedback(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+        print(f"[correct] upload failed: {e!r}")
+        raise HTTPException(status_code=500, detail="Upload failed, please try again")
 
 
 @app.post(
@@ -404,7 +446,8 @@ async def new_produce_feedback(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+        print(f"[new-produce] upload failed: {e!r}")
+        raise HTTPException(status_code=500, detail="Upload failed, please try again")
 
 
 @app.post(

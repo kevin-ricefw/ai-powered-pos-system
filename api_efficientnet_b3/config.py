@@ -15,8 +15,12 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
 
 # --- Model ---
-ONNX_PATH = os.environ.get("ONNX_PATH", str(BASE_DIR / "efficientnet_b3.onnx"))
-THRESHOLD_PATH = os.environ.get("THRESHOLD_PATH", str(BASE_DIR / "class_thresholds.csv"))
+ONNX_PATH = os.environ.get("ONNX_PATH", str(BASE_DIR / "models" / "efficientnet_b7_48class.onnx"))
+CLASS_MAP_PATH = os.environ.get("CLASS_MAP_PATH", str(BASE_DIR / "models" / "class_to_idx.json"))
+CLASS_ALIASES_PATH = os.environ.get("CLASS_ALIASES_PATH", str(BASE_DIR / "models" / "class_aliases.json"))
+IMG_SIZE = int(os.environ.get("IMG_SIZE", 456))
+# No per-class thresholds exist for the 48-class model yet; one flat value for all classes.
+DEFAULT_THRESHOLD = float(os.environ.get("DEFAULT_THRESHOLD", 0.5))
 
 # --- GCS feedback storage (confirm/correct/new-produce) ---
 FEEDBACK_BUCKET = os.environ.get("FEEDBACK_BUCKET", "vegdetect-pos-models")

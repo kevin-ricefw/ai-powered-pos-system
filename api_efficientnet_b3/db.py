@@ -12,6 +12,7 @@ from psycopg2 import sql
 from psycopg2.pool import ThreadedConnectionPool
 from sshtunnel import SSHTunnelForwarder
 
+from azure_blob import resolve_tenant_image_url
 from config import (
     DB_HOST,
     DB_NAME,
@@ -86,7 +87,9 @@ def _fallback_thumbnail(name: str) -> str:
     return f"https://ui-avatars.com/api/?name={initials}&color=6B7280&background=F3F4F6"
 
 
-def _fetch_product_details(cur, schema: sql.Identifier, product_ids: list[int]) -> dict[int, dict]:
+def _fetch_product_details(
+    cur, schema: sql.Identifier, tenant_id: str, product_ids: list[int]
+) -> dict[int, dict]:
     cur.execute(
         sql.SQL(
             """
@@ -121,7 +124,7 @@ def _fetch_product_details(cur, schema: sql.Identifier, product_ids: list[int]) 
             "price": float(price),
             "thumbnail": _fallback_thumbnail(name),
             "category": (
-                {"id": cat_id, "name": cat_name, "image_url": cat_image}
+                {"id": cat_id, "name": cat_name, "image_url": resolve_tenant_image_url(tenant_id, cat_image)}
                 if cat_id is not None
                 else None
             ),
@@ -147,12 +150,7 @@ def _fetch_product_details(cur, schema: sql.Identifier, product_ids: list[int]) 
     return details
 
 
-def _fetch_thumbnails(cur, schema: sql.Identifier, product_ids: list[int]) -> dict[int, str]:
-    # ponytail: Laravel's accessor resolves a signed/full storage URL for
-    # non-http paths; this service has no access to that storage account, so
-    # a relative path just falls back to the placeholder avatar like Laravel
-    # does when Storage::exists() fails. Wire up real storage access if
-    # thumbnails need to show actual product photos.
+def _fetch_thumbnails(cur, schema: sql.Identifier, tenant_id: str, product_ids: list[int]) -> dict[int, str]:
     cur.execute(
         sql.SQL(
             """
@@ -164,7 +162,8 @@ def _fetch_thumbnails(cur, schema: sql.Identifier, product_ids: list[int]) -> di
         ).format(schema),
         (product_ids,),
     )
-    return {pid: url for pid, url in cur.fetchall() if url and url.startswith("http")}
+    resolved = ((pid, resolve_tenant_image_url(tenant_id, url)) for pid, url in cur.fetchall())
+    return {pid: url for pid, url in resolved if url}
 
 
 def _fetch_deposit_products(cur, schema: sql.Identifier, product_ids: list[int]) -> dict[int, list[dict]]:
@@ -228,8 +227,8 @@ def fetch_top_products(tenant_id: str, labels: list[str]) -> list[dict]:
             top.sort(key=lambda item: item[1], reverse=True)
             top_ids = [row[0] for row, _ in top]
 
-            details = _fetch_product_details(cur, schema, top_ids)
-            thumbnails = _fetch_thumbnails(cur, schema, top_ids)
+            details = _fetch_product_details(cur, schema, tenant_id, top_ids)
+            thumbnails = _fetch_thumbnails(cur, schema, tenant_id, top_ids)
             deposits = _fetch_deposit_products(cur, schema, top_ids)
     finally:
         pool.putconn(conn)

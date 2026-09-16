@@ -26,6 +26,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -59,6 +60,13 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -456,10 +464,16 @@ async def new_produce_feedback(
     summary="Save the live /ws/infer camera's current frame to Blob Storage, labeled",
     response_model=FeedbackSaveResponse,
 )
-async def collect_training_image(
-    session_id: str = Form(..., description="session_id received from /ws/infer on connect"),
-    label: str = Form(...),
-):
+async def collect_training_image(request: Request):
+    if request.headers.get("content-type", "").startswith("application/json"):
+        body = await request.json()
+        session_id, label = body.get("session_id"), body.get("label")
+    else:
+        form = await request.form()
+        session_id, label = form.get("session_id"), form.get("label")
+    if not session_id or not label:
+        raise HTTPException(status_code=422, detail="session_id and label are required")
+
     contents = _latest_frames.get(session_id)
     if contents is None:
         raise HTTPException(status_code=404, detail="No live frame for this session_id (socket closed or no frame received yet)")

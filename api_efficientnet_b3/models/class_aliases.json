@@ -55,14 +55,14 @@
   "drumstick_leaves": [
     "Drumstick Leaves"
   ],
-  "edo_taro": [],
+  "edo_taro": ["edo taro"],
   "eggplant": [
     "Indian Eggplant",
     "Thai Eggplant",
     "Graffiti Eggplant",
     "Chinese Eggplant"
   ],
-  "flat_valor": [],
+  "flat_valor": ["flat valor"],
   "garlic": [
     "Garlic",
     "Garlic Loose",
@@ -97,8 +97,8 @@
     "Lemon Each",
     "Yellow Lemon 4 Piece"
   ],
-  "long_beans": [],
-  "mango": [],
+  "long_beans": ["long beans"],
+  "mango": ["mango"],
   "mint": [
     "Mint",
     "Mint Bunch"

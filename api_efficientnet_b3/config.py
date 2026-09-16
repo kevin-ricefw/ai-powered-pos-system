@@ -45,5 +45,10 @@ DB_PASSWORD = os.environ.get("DB_PASSWORD")
 AZURE_STORAGE_CONNECTION_STRING = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
 AZURE_CONTAINER_NAME = os.environ.get("AZURE_CONTAINER_NAME", "pending-detections")
 
+# --- Azure Blob Storage (tenant product/category photos: one shared
+# container, blobs prefixed per tenant as "wecomm<tenant_id>/...") ---
+AZURE_TENANT_IMAGES_CONNECTION_STRING = os.environ.get("AZURE_TENANT_IMAGES_CONNECTION_STRING")
+AZURE_TENANT_IMAGES_CONTAINER = os.environ.get("AZURE_TENANT_IMAGES_CONTAINER", "wecommpos")
+
 # --- App ---
 PORT = int(os.environ.get("PORT", 8080))

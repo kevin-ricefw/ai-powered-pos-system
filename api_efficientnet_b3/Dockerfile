@@ -10,11 +10,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py inference.py gcs_feedback.py config.py db.py azure_blob.py ./
-COPY models/efficientnet_b7_48class.onnx models/class_to_idx.json models/class_aliases.json ./models/
+COPY ["models/efficientnet_b7 3.onnx", "models/class_to_idx.json", "models/class_aliases.json", "./models/"]
 COPY static/ ./static/
 COPY VeggieLens_API.postman_collection.json ./
 
-ENV ONNX_PATH=/app/models/efficientnet_b7_48class.onnx
+ENV ONNX_PATH="/app/models/efficientnet_b7 3.onnx"
 ENV CLASS_MAP_PATH=/app/models/class_to_idx.json
 
 EXPOSE 8080 443

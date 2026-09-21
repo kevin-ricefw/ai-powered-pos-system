@@ -79,7 +79,9 @@ _STATIC_PRODUCT_FIELDS = {
     "scale_lb_factor": None,
 }
 
-MIN_MATCH_SCORE = 50.0  # percent; every alias match at/above this is returned, no fixed count
+MIN_MATCH_SCORE = 50.0  # percent; preferred match floor, relaxed to backfill below MIN_RESULTS
+MIN_RESULTS = 3  # backfill with next-best-scoring matches (even below MIN_MATCH_SCORE) up to this many
+MAX_RESULTS = 10  # hard cap on returned products
 
 
 def _fallback_thumbnail(name: str) -> str:
@@ -190,10 +192,15 @@ def fetch_top_products(tenant_id: str, labels: list[str]) -> list[dict]:
     """Fuzzy-match predicted class labels (already expanded to their aliases,
     across the top-k predicted classes) against a tenant's products.slug column.
 
-    Returns every distinct product scoring at/above MIN_MATCH_SCORE (0-100),
-    sorted by match_score descending, each enriched with full product details
-    (category, sales unit of measurement, tax rate, deposit products, ...) for
-    direct display/checkout use. No fixed result-count cap.
+    Returns between MIN_RESULTS and MAX_RESULTS distinct products (fewer only
+    if the tenant has fewer matching candidates than MIN_RESULTS total),
+    ordered the same as `labels` (i.e. detection order — highest-confidence
+    prediction first) among matches scoring at/above MIN_MATCH_SCORE, ties
+    broken by match score descending. If fewer than MIN_RESULTS clear
+    MIN_MATCH_SCORE, backfilled with the next-best-scoring candidates
+    regardless of threshold. Each result is enriched with full product
+    details (category, sales unit of measurement, tax rate, deposit
+    products, ...) for direct display/checkout use.
     """
     # ponytail: tenant_id is quoted as an identifier (injection-safe) but not
     # checked against a tenant registry, per explicit instruction. Add a
@@ -216,16 +223,33 @@ def fetch_top_products(tenant_id: str, labels: list[str]) -> list[dict]:
                 print(f"[db] tenant={tenant_id} total_products={total_count} patterns={patterns} matched=0")
                 return []
 
-            def score(slug: str) -> float:
-                return max(
+            def match_info(slug: str) -> tuple[float, int]:
+                """Best fuzzy score against any alias, plus the rank (index into
+                slugged_labels, i.e. detection order) of the earliest alias that
+                clears MIN_MATCH_SCORE — used to sort by detection order rather
+                than by score."""
+                ratios = [
                     difflib.SequenceMatcher(None, s, slug.lower()).ratio()
                     for s in slugged_labels
+                ]
+                best_score = max(ratios)
+                matched_rank = next(
+                    (i for i, r in enumerate(ratios) if r * 100 >= MIN_MATCH_SCORE),
+                    len(ratios),
                 )
+                return best_score, matched_rank
 
-            scored = [(row, score(row[3])) for row in rows]
+            scored = [(row, *match_info(row[3])) for row in rows]
             top = [item for item in scored if item[1] * 100 >= MIN_MATCH_SCORE]
-            top.sort(key=lambda item: item[1], reverse=True)
-            top_ids = [row[0] for row, _ in top]
+            top.sort(key=lambda item: (item[2], -item[1]))
+
+            if len(top) < MIN_RESULTS:
+                backfill = [item for item in scored if item[1] * 100 < MIN_MATCH_SCORE]
+                backfill.sort(key=lambda item: -item[1])
+                top += backfill[: MIN_RESULTS - len(top)]
+
+            top = top[:MAX_RESULTS]
+            top_ids = [row[0] for row, _, _ in top]
 
             details = _fetch_product_details(cur, schema, tenant_id, top_ids)
             thumbnails = _fetch_thumbnails(cur, schema, tenant_id, top_ids)
@@ -236,7 +260,7 @@ def fetch_top_products(tenant_id: str, labels: list[str]) -> list[dict]:
     print(f"[db] tenant={tenant_id} total_products={total_count} patterns={patterns} matched={len(rows)}")
 
     results = []
-    for row, sc in top:
+    for row, sc, _rank in top:
         pid = row[0]
         product = details[pid]
         if pid in thumbnails:
